@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+# daily — driver for the C++ exercise set.  Run ./daily help.
+set -euo pipefail
+# resolve symlinks so `daily` works from ~/.local/bin
+ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+cd "$ROOT"
+
+EX_DIR=exercises
+WORK=work
+BUILD=.build
+PROGRESS=.progress
+CXX=${CXX:-g++}
+CXXFLAGS=${CXXFLAGS:-"-std=c++20 -O2 -g -Wall -Wextra -Wno-unused-parameter -fsanitize=address,undefined -fno-sanitize-recover=undefined"}
+# detect_stack_use_after_return=0: ASAN's fake stack makes 1e6-deep recursion ~30x slower
+export ASAN_OPTIONS=${ASAN_OPTIONS:-detect_leaks=0:detect_stack_use_after_return=0}
+export UBSAN_OPTIONS=${UBSAN_OPTIONS:-print_stacktrace=1}
+
+mkdir -p "$WORK" "$BUILD"
+touch "$PROGRESS"
+
+usage() {
+  cat <<'USAGE'
+usage: daily <command> [exercise]
+       daily <ex>        shorthand for `daily open <ex>` (e.g. daily trie, daily 12)
+
+  list              all exercises with status
+  next              open the first exercise you haven't passed yet
+  today             open the exercise picked for today (rotates through all of them)
+  open <ex>         open an exercise in nvim (creates work/<ex>.cpp from the skeleton)
+                    (inside nvim: :DailyNext / :DailyOpen <ex> switch exercise in place)
+  test <ex>         compile work/<ex>.cpp against the tests and run them
+  sample <ex>       run your own cases in work/<ex>.sample.cpp instead (never
+                    recorded as a pass; the file is created if it is missing)
+  reset <ex>|all    overwrite work/<ex>.cpp with the fresh skeleton
+                    (all: every work file, and clears .progress — asks first)
+  readme <ex>       print the problem statement
+  ref <ex>|all      run the tests against the hidden reference solution
+  install [dir]     symlink daily into ~/.local/bin (or dir) so it runs from anywhere
+  new <NN_name>     scaffold a new exercise (for example, 39_suffix_array)
+
+<ex> may be a number (3), a name (segment_tree), a full id (03_segment_tree),
+or a path to the work file (work/03_segment_tree.cpp) — so `:!./daily test %`
+works from inside nvim.
+USAGE
+}
+
+all_exercises() { ls "$EX_DIR" | sort; }
+
+resolve() {
+  local q="$1" m
+  if [[ "$q" == *exercises/* ]]; then q="${q#*exercises/}"; q="${q%%/*}"; fi
+  q="${q##*/}"; q="${q%.cpp}"; q="${q%.sample}"
+  if [[ -d "$EX_DIR/$q" ]]; then echo "$q"; return; fi
+  if [[ "$q" =~ ^[0-9]+$ ]]; then
+    m=$(all_exercises | grep -E "^0*${q}_" || true)
+  else
+    m=$(all_exercises | grep -E "^[0-9]+_${q}$" || true)
+    # prefer names starting with q (so `z` → z_function, not lazy_segtree)
+    [[ -n "$m" ]] || m=$(all_exercises | grep -E "^[0-9]+_${q}" || true)
+    [[ -n "$m" ]] || m=$(all_exercises | grep -F -- "$q" || true)
+  fi
+  local n; n=$(printf '%s\n' "$m" | grep -c . || true)
+  if [[ "$n" -eq 0 ]]; then echo "no exercise matches '$1'" >&2; exit 1; fi
+  if [[ "$n" -gt 1 ]]; then echo "ambiguous '$1':" >&2; printf '  %s\n' $m >&2; exit 1; fi
+  echo "$m"
+}
+
+passed_on() { awk -F'\t' -v e="$1" '$1==e{print $2}' "$PROGRESS"; }
+
+record_pass() {
+  local ex="$1" today; today=$(date +%F)
+  { grep -v -P "^\Q$ex\E\t" "$PROGRESS" || true; echo -e "$ex\t$today"; } > "$PROGRESS.tmp"
+  mv "$PROGRESS.tmp" "$PROGRESS"
+}
+
+ensure_work() {
+  local ex="$1"
+  if [[ ! -f "$WORK/$ex.cpp" ]]; then
+    cp "$EX_DIR/$ex/skeleton.cpp" "$WORK/$ex.cpp"
+    echo "created $WORK/$ex.cpp from skeleton"
+  fi
+}
+
+# work/<ex>.sample.cpp: a scratch test file for debugging with hand-written cases
+ensure_sample() {
+  local ex="$1" f="$WORK/$ex.sample.cpp"
+  [[ -f "$f" ]] && return
+  cat > "$f" <<EOT
+// Sample cases for $ex — edit freely.  Run with ./daily sample $ex
+// (or <leader>r inside nvim).  Never recorded as a pass.
+#include "harness.h"
+#include SOLUTION
+
+TEST(example) {
+  CHECK_EQ(1, 1);
+}
+EOT
+  echo "created $f"
+}
+
+open_in_nvim() {
+  local ex="$1"
+  ensure_work "$ex"
+  exec nvim -O "$WORK/$ex.cpp" "$EX_DIR/$ex/README.md" -c "luafile $ROOT/.nvim.lua"
+}
+
+compile_and_run() {
+  local ex="$1" src="$2" record="${3:-yes}" tests="${4:-}"
+  local bin="$BUILD/$ex"
+  if [[ -n "$tests" ]]; then bin="$BUILD/$ex.sample"; else tests="$EX_DIR/$ex/test.cpp"; fi
+  echo "== $ex  ($src)  tests: $tests"
+  if ! "$CXX" $CXXFLAGS -I"$ROOT" -DSOLUTION="\"$ROOT/$src\"" "$tests" -o "$bin"; then
+    echo; echo "COMPILE ERROR"; return 1
+  fi
+  ulimit -s unlimited 2>/dev/null || ulimit -s 1048576 2>/dev/null || true
+  if "$bin"; then
+    [[ "$record" == yes ]] && record_pass "$ex"
+    echo "PASSED"
+  else
+    echo "FAILED"; return 1
+  fi
+}
+
+cmd=${1:-help}
+case "$cmd" in
+  help|-h|--help) usage ;;
+
+  list)
+    for ex in $(all_exercises); do
+      local_d=$(passed_on "$ex")
+      if [[ -n "$local_d" ]]; then s="✓ $local_d"
+      elif [[ -f "$WORK/$ex.cpp" ]]; then s="… started"
+      else s="·"; fi
+      printf '  %-24s %s\n' "$ex" "$s"
+    done ;;
+
+  next)
+    for ex in $(all_exercises); do
+      [[ -z "$(passed_on "$ex")" ]] && open_in_nvim "$ex"
+    done
+    echo "everything passed — try ./daily today for a re-run, or ./daily reset <ex>" ;;
+
+  # print the id of the next unpassed exercise (used by :DailyNext in nvim)
+  next-id)
+    for ex in $(all_exercises); do
+      if [[ -z "$(passed_on "$ex")" ]]; then ensure_work "$ex" >/dev/null; echo "$ex"; exit 0; fi
+    done
+    exit 1 ;;
+
+  # print the resolved id of an exercise, creating its work file
+  resolve)
+    ex=$(resolve "${2:?exercise required}"); ensure_work "$ex" >/dev/null; echo "$ex" ;;
+
+  today)
+    mapfile -t exs < <(all_exercises)
+    idx=$(( ($(date +%s) / 86400) % ${#exs[@]} ))
+    ex=${exs[$idx]}
+    echo "today's exercise: $ex"
+    open_in_nvim "$ex" ;;
+
+  open)   ex=$(resolve "${2:?exercise required}"); open_in_nvim "$ex" ;;
+  readme) ex=$(resolve "${2:?exercise required}"); cat "$EX_DIR/$ex/README.md" ;;
+
+  test)
+    ex=$(resolve "${2:?exercise required}")
+    ensure_work "$ex"
+    compile_and_run "$ex" "$WORK/$ex.cpp" ;;
+
+  sample)
+    ex=$(resolve "${2:?exercise required}")
+    ensure_work "$ex"
+    ensure_sample "$ex"
+    compile_and_run "$ex" "$WORK/$ex.cpp" no "$WORK/$ex.sample.cpp" ;;
+
+  reset)
+    if [[ "${2:-}" == all ]]; then
+      read -r -p "reset ALL work files and clear progress? [y/N] " ans
+      [[ "$ans" == [yY]* ]] || { echo "aborted"; exit 1; }
+      for ex in $(all_exercises); do
+        [[ -f "$WORK/$ex.cpp" ]] && cp "$EX_DIR/$ex/skeleton.cpp" "$WORK/$ex.cpp"
+      done
+      : > "$PROGRESS"
+      echo "reset all work files and cleared $PROGRESS"
+      exit 0
+    fi
+    ex=$(resolve "${2:?exercise required}")
+    cp "$EX_DIR/$ex/skeleton.cpp" "$WORK/$ex.cpp"
+    echo "reset $WORK/$ex.cpp" ;;
+
+  ref)
+    if [[ "${2:-}" == all ]]; then
+      rc=0
+      for ex in $(all_exercises); do compile_and_run "$ex" "reference/$ex.cpp" no || rc=1; echo; done
+      exit $rc
+    fi
+    ex=$(resolve "${2:?exercise required}")
+    compile_and_run "$ex" "reference/$ex.cpp" no ;;
+
+  new)
+    ex=${2:?name like 39_topic required}
+    [[ "$ex" =~ ^[0-9]{2}_[a-z0-9]+(_[a-z0-9]+)*$ ]] || {
+      echo "invalid exercise id '$ex' (expected NN_lowercase_name)" >&2
+      exit 1
+    }
+    [[ -d "$EX_DIR/$ex" ]] && { echo "exists"; exit 1; }
+    mkdir -p "$EX_DIR/$ex"
+    printf '# %s\n\nDescribe the task and the exact interface here.\n' "$ex" > "$EX_DIR/$ex/README.md"
+    printf '#include <bits/stdc++.h>\nusing namespace std;\n\n// TODO\n' > "$EX_DIR/$ex/skeleton.cpp"
+    printf '#include "harness.h"\n#include SOLUTION\n\nTEST(basic) {\n    CHECK_EQ(1, 1);\n}\n' > "$EX_DIR/$ex/test.cpp"
+    cp "$EX_DIR/$ex/skeleton.cpp" "reference/$ex.cpp"
+    echo "scaffolded $EX_DIR/$ex/{README.md,skeleton.cpp,test.cpp} and reference/$ex.cpp" ;;
+
+  # put `daily` on PATH as a symlink (default ~/.local/bin, or pass a directory)
+  install)
+    dir=${2:-$HOME/.local/bin}
+    mkdir -p "$dir"
+    ln -sf "$ROOT/daily" "$dir/daily"
+    echo "linked $dir/daily -> $ROOT/daily"
+    case ":$PATH:" in *":$dir:"*) ;; *) echo "note: $dir is not on your PATH — add it in your shell rc" ;; esac ;;
+
+  # anything else is treated as an exercise: `daily trie` == `daily open trie`
+  *) ex=$(resolve "$cmd"); open_in_nvim "$ex" ;;
+esac

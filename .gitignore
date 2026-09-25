@@ -1,0 +1,4 @@
+.build/
+.progress
+.progress.tmp
+work/
