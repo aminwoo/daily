@@ -14,7 +14,7 @@ Needs bash, `g++` with C++20 and AddressSanitizer (GCC 10+; set `CXX=clang++`
 to use clang), and Neovim for the editor commands.
 
 ```sh
-git clone <this repo> daily && cd daily
+git clone https://github.com/aminwoo/daily.git && cd daily
 ./daily install       # symlinks daily into ~/.local/bin (or ./daily install <dir>)
 daily next
 ```
