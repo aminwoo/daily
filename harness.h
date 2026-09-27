@@ -3,6 +3,7 @@
 // (SOLUTION is passed by ./daily as -DSOLUTION="path/to/your.cpp")
 #pragma once
 #include <bits/stdc++.h>
+#include <pthread.h>
 #include <unistd.h>
 
 #include <csignal>
@@ -89,8 +90,7 @@ inline void on_alarm(int) {
   _exit(2);
 }
 
-inline int run_all() {
-  std::signal(SIGALRM, on_alarm);
+inline int run_all_here() {
   int failed_tests = 0;
   for (auto& t : tests()) {
     current = t.name;
@@ -117,6 +117,25 @@ inline int run_all() {
   std::printf("\n  %zu tests, %d checks, %d failing test%s\n", tests().size(),
               checks, failed_tests, failed_tests == 1 ? "" : "s");
   return failed_tests ? 1 : 0;
+}
+
+// Run the tests on a thread with a 1 GiB stack so deep recursion works
+// everywhere: `ulimit -s` can't raise the main stack past 64 MiB on macOS.
+inline int run_all() {
+  std::signal(SIGALRM, on_alarm);
+  static int rc = 1;
+  pthread_attr_t attr;
+  pthread_attr_init(&attr);
+  pthread_attr_setstacksize(&attr, size_t(1) << 30);
+  pthread_t th;
+  if (pthread_create(&th, &attr, [](void*) -> void* {
+        rc = run_all_here();
+        return nullptr;
+      }, nullptr) != 0)
+    return run_all_here();  // couldn't get the big stack; run on this one
+  pthread_join(th, nullptr);
+  pthread_attr_destroy(&attr);
+  return rc;
 }
 
 }  // namespace harness

@@ -6,11 +6,11 @@ ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 cd "$ROOT"
 
 EX_DIR=exercises
-WORK=work
+WORK=${DAILY_WORK:-work}  # overridable so a server can keep state on a volume
 BUILD=.build
-PROGRESS=.progress
+PROGRESS=${DAILY_PROGRESS:-.progress}
 CXX=${CXX:-g++}
-CXXFLAGS=${CXXFLAGS:-"-std=c++20 -O2 -g -Wall -Wextra -Wno-unused-parameter -fsanitize=address,undefined -fno-sanitize-recover=undefined"}
+CXXFLAGS=${CXXFLAGS:-"-std=c++20 -pthread -O2 -g -Wall -Wextra -Wno-unused-parameter -fsanitize=address,undefined -fno-sanitize-recover=undefined"}
 # detect_stack_use_after_return=0: ASAN's fake stack makes 1e6-deep recursion ~30x slower
 export ASAN_OPTIONS=${ASAN_OPTIONS:-detect_leaks=0:detect_stack_use_after_return=0}
 export UBSAN_OPTIONS=${UBSAN_OPTIONS:-print_stacktrace=1}
@@ -69,7 +69,7 @@ passed_on() { awk -F'\t' -v e="$1" '$1==e{print $2}' "$PROGRESS"; }
 
 record_pass() {
   local ex="$1" today; today=$(date +%F)
-  { grep -v -P "^\Q$ex\E\t" "$PROGRESS" || true; echo -e "$ex\t$today"; } > "$PROGRESS.tmp"
+  { awk -F'\t' -v e="$ex" '$1!=e' "$PROGRESS"; printf '%s\t%s\n' "$ex" "$today"; } > "$PROGRESS.tmp"
   mv "$PROGRESS.tmp" "$PROGRESS"
 }
 
@@ -106,13 +106,13 @@ open_in_nvim() {
 
 compile_and_run() {
   local ex="$1" src="$2" record="${3:-yes}" tests="${4:-}"
-  local bin="$BUILD/$ex"
+  local bin="$BUILD/$ex" srcpath="$src"
+  [[ "$src" == /* ]] || srcpath="$ROOT/$src"
   if [[ -n "$tests" ]]; then bin="$BUILD/$ex.sample"; else tests="$EX_DIR/$ex/test.cpp"; fi
   echo "== $ex  ($src)  tests: $tests"
-  if ! "$CXX" $CXXFLAGS -I"$ROOT" -DSOLUTION="\"$ROOT/$src\"" "$tests" -o "$bin"; then
+  if ! "$CXX" $CXXFLAGS -I"$ROOT" -idirafter "$ROOT/compat" -DSOLUTION="\"$srcpath\"" "$tests" -o "$bin"; then
     echo; echo "COMPILE ERROR"; return 1
   fi
-  ulimit -s unlimited 2>/dev/null || ulimit -s 1048576 2>/dev/null || true
   if "$bin"; then
     [[ "$record" == yes ]] && record_pass "$ex"
     echo "PASSED"
@@ -152,7 +152,7 @@ case "$cmd" in
     ex=$(resolve "${2:?exercise required}"); ensure_work "$ex" >/dev/null; echo "$ex" ;;
 
   today)
-    mapfile -t exs < <(all_exercises)
+    exs=($(all_exercises))  # not mapfile: macOS ships bash 3.2
     idx=$(( ($(date +%s) / 86400) % ${#exs[@]} ))
     ex=${exs[$idx]}
     echo "today's exercise: $ex"

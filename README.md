@@ -47,6 +47,42 @@ it is a spaced-repetition re-run once you've passed everything).
 `<ex>` can be a number (`3`), a name (`segment_tree`), the full id, or a path to
 the work file — so `:!./daily test %` works inside nvim too.
 
+## Web version
+
+`web/` is the same drill set as a website: problem statement, editor (with a
+Vim toggle), and a Run button that streams the test output. It works on a
+phone too. The server just calls `./daily test` / `./daily sample`, so the
+flags, sanitizers, timeouts and `.progress` are exactly the CLI's.
+
+```sh
+python3 web/server.py                     # http://127.0.0.1:8080, no password on localhost
+DAILY_PASSWORD=... python3 web/server.py --host 0.0.0.0
+```
+
+It runs whatever code it is sent, so it will not listen beyond localhost
+without `DAILY_PASSWORD`. It needs only the Python standard library.
+
+**Hosting it** (to use it from anywhere): the `Dockerfile` bundles g++, the
+server and the exercises; your solutions and progress go on a `/data` volume.
+
+```sh
+# any box with Docker, behind a TLS proxy such as Caddy:
+docker build -t daily-web .
+docker run -d --restart unless-stopped -p 8080:8080 \
+  -e DAILY_PASSWORD=... -v daily-data:/data daily-web
+
+# or Fly.io (fly.toml included; sleeps when idle):
+fly launch --no-deploy --copy-config
+fly volumes create daily_data --size 1
+fly secrets set DAILY_PASSWORD=...
+fly deploy
+```
+
+`DAILY_WORK` and `DAILY_PROGRESS` move `work/` and `.progress` for the CLI too.
+The container starts with its own empty state; to bring your local progress
+along, copy `work/` and `.progress` into the volume (`fly ssh sftp shell`, or
+`docker cp`) as `/data/work` and `/data/progress`.
+
 ## Layout
 
 ```
@@ -57,6 +93,7 @@ work/NN_name.cpp      your solutions (created from the skeleton on first open)
 work/NN_name.sample.cpp  optional scratch tests for debugging (./daily sample <ex>)
 reference/NN_name.cpp reference solutions — ./daily ref <ex> runs the tests against one
 .progress             which exercises you've passed and when
+web/                  the website: server.py (API + runner) and index.html
 ```
 
 ## Rules of the game

@@ -1,0 +1,7 @@
+.git
+.build
+work
+.progress
+.progress.tmp
+Dockerfile
+fly.toml

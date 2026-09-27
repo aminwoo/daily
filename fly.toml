@@ -1,0 +1,26 @@
+# Fly.io deploy for the web version — see "Web version" in README.md.
+# `fly launch --no-deploy` will offer to rename the app; keep the rest.
+app = "daily-drills"
+# primary_region: `fly launch` fills in the one nearest you
+
+[build]
+
+[mounts]
+  source = "daily_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "stop"   # sleeps when idle; the first request wakes it (~2 s)
+  auto_start_machines = true
+  min_machines_running = 0
+
+  [[http_service.checks]]
+    path = "/healthz"
+    interval = "30s"
+    timeout = "5s"
+
+[[vm]]
+  memory = "1gb"   # ASan builds of the bigger tests need more than 512 MB
+  cpus = 1
